@@ -4,15 +4,23 @@ Defensive configuration for [Claude Code](https://claude.ai/code) that prevents 
 
 Built after hitting the **20MB request limit** by dropping screenshots into Claude Code — crashing the session with no recovery. These safeguards make that impossible.
 
-## Quick Install
+## Install
 
-```bash
-git clone https://github.com/MeriaApp/claude-code-safeguards.git
-cd claude-code-safeguards
-./install.sh
+**Paste this into Claude Code:**
+
+```
+Install the Claude Code safeguards from https://github.com/MeriaApp/claude-code-safeguards — clone to /tmp, run install.sh, then delete the clone.
 ```
 
-Restart Claude Code after install.
+That's it. Claude handles the rest.
+
+**Or manually:**
+
+```bash
+git clone https://github.com/MeriaApp/claude-code-safeguards.git /tmp/claude-code-safeguards
+cd /tmp/claude-code-safeguards && ./install.sh
+rm -rf /tmp/claude-code-safeguards
+```
 
 **Requires:** `jq` (`brew install jq` / `apt install jq`)
 
