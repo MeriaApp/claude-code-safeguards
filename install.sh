@@ -10,7 +10,10 @@ HOOKS_DIR="$CLAUDE_DIR/hooks"
 RULES_DIR="$CLAUDE_DIR/rules"
 SETTINGS_FILE="$CLAUDE_DIR/settings.json"
 
-echo "=== Claude Code Safeguards ==="
+echo ""
+echo "  ╔══════════════════════════════════════╗"
+echo "  ║     Claude Code Safeguards v1.0      ║"
+echo "  ╚══════════════════════════════════════╝"
 echo ""
 
 # Check dependencies
@@ -24,78 +27,238 @@ fi
 # Create directories
 mkdir -p "$HOOKS_DIR" "$RULES_DIR"
 
-# --- Install hook ---
-HOOK_SRC="$(cd "$(dirname "$0")" && pwd)/hooks/process-screenshot.sh"
-HOOK_DST="$HOOKS_DIR/process-screenshot.sh"
+# --- Install hooks ---
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-if [ -f "$HOOK_SRC" ]; then
-  cp "$HOOK_SRC" "$HOOK_DST"
-  chmod +x "$HOOK_DST"
-  echo "[OK] Installed screenshot hook -> $HOOK_DST"
-else
-  echo "[SKIP] Hook source not found at $HOOK_SRC"
-fi
+echo "Installing hooks..."
+for hook_file in "$SCRIPT_DIR/hooks/"*.sh; do
+  [ -f "$hook_file" ] || continue
+  hook_name=$(basename "$hook_file")
+  cp "$hook_file" "$HOOKS_DIR/$hook_name"
+  chmod +x "$HOOKS_DIR/$hook_name"
+  echo "  [OK] $hook_name"
+done
 
 # --- Install rules ---
-RULES_SRC="$(cd "$(dirname "$0")" && pwd)/rules"
-for rule_file in "$RULES_SRC"/*.md; do
+echo ""
+echo "Installing rules..."
+for rule_file in "$SCRIPT_DIR/rules/"*.md; do
   [ -f "$rule_file" ] || continue
   rule_name=$(basename "$rule_file")
   cp "$rule_file" "$RULES_DIR/$rule_name"
-  echo "[OK] Installed rule -> $RULES_DIR/$rule_name"
+  echo "  [OK] $rule_name"
 done
 
 # --- Merge settings.json ---
-# We merge our settings into existing ones, never overwrite
+echo ""
+echo "Configuring settings..."
+
 if [ ! -f "$SETTINGS_FILE" ]; then
   echo "{}" > "$SETTINGS_FILE"
-  echo "[OK] Created $SETTINGS_FILE"
 fi
 
-# Backup existing settings
 cp "$SETTINGS_FILE" "${SETTINGS_FILE}.backup.$(date +%Y%m%d_%H%M%S)"
-echo "[OK] Backed up existing settings"
+echo "  [OK] Backed up existing settings"
 
-# Read current settings
 current=$(cat "$SETTINGS_FILE")
 
-# Add PreToolUse hook (if not already present)
+# Add JSON schema for autocomplete in editors
+current=$(echo "$current" | jq '."$schema" = "https://json.schemastore.org/claude-code-settings.json"')
+
+# --- Register hooks in settings ---
+
+# PreToolUse: screenshot hook
 has_screenshot_hook=$(echo "$current" | jq '.hooks.PreToolUse // [] | map(select(.hooks[]?.command | test("process-screenshot"))) | length')
 if [ "$has_screenshot_hook" = "0" ]; then
-  current=$(echo "$current" | jq --arg cmd "$HOOK_DST" '
+  current=$(echo "$current" | jq --arg cmd "$HOOKS_DIR/process-screenshot.sh" '
     .hooks.PreToolUse = (.hooks.PreToolUse // []) + [{
       "matcher": "Read",
-      "hooks": [{
-        "command": $cmd,
-        "type": "command"
-      }]
+      "hooks": [{"command": $cmd, "type": "command"}]
     }]
   ')
-  echo "[OK] Added screenshot PreToolUse hook"
-else
-  echo "[SKIP] Screenshot hook already configured"
+  echo "  [OK] Screenshot hook (PreToolUse/Read)"
 fi
 
-# Add deny rules for binary files (merge, don't duplicate)
-DENY_RULES='["Read(*.mp4)","Read(*.mov)","Read(*.avi)","Read(*.mp3)","Read(*.wav)","Read(*.zip)","Read(*.tar.gz)","Read(*.rar)","Read(*.dmg)","Read(*.iso)","Read(*.psd)","Read(*.ai)","Read(*.sketch)"]'
+# PreToolUse: destructive command blocker
+has_destructive_hook=$(echo "$current" | jq '.hooks.PreToolUse // [] | map(select(.hooks[]?.command | test("block-destructive"))) | length')
+if [ "$has_destructive_hook" = "0" ]; then
+  current=$(echo "$current" | jq --arg cmd "$HOOKS_DIR/block-destructive-commands.sh" '
+    .hooks.PreToolUse = (.hooks.PreToolUse // []) + [{
+      "matcher": "Bash",
+      "hooks": [{"command": $cmd, "type": "command"}]
+    }]
+  ')
+  echo "  [OK] Destructive command blocker (PreToolUse/Bash)"
+fi
 
+# PreCompact: context preservation
+has_compact_hook=$(echo "$current" | jq '.hooks.PreCompact // [] | map(select(.hooks[]?.command | test("save-context-before-compact"))) | length')
+if [ "$has_compact_hook" = "0" ]; then
+  current=$(echo "$current" | jq --arg cmd "$HOOKS_DIR/save-context-before-compact.sh" '
+    .hooks.PreCompact = (.hooks.PreCompact // []) + [{
+      "matcher": "",
+      "hooks": [{"command": $cmd, "type": "command"}]
+    }]
+  ')
+  echo "  [OK] Context preservation hook (PreCompact)"
+fi
+
+# --- Permissions ---
+
+# Allow rules (eliminates constant permission prompts)
+ALLOW_RULES='["Bash(*)","Read","Write","Edit","Glob","Grep","Agent","WebFetch","WebSearch"]'
+current=$(echo "$current" | jq --argjson new_allow "$ALLOW_RULES" '
+  .permissions.allow = ((.permissions.allow // []) + $new_allow | unique)
+')
+echo "  [OK] Allow rules (Bash, Read, Write, Edit, Glob, Grep, Agent, WebFetch, WebSearch)"
+
+# Deny rules — binary files + secrets + credentials
+DENY_RULES='[
+  "Read(*.mp4)","Read(*.mov)","Read(*.avi)","Read(*.mkv)",
+  "Read(*.mp3)","Read(*.wav)","Read(*.flac)",
+  "Read(*.zip)","Read(*.tar.gz)","Read(*.rar)","Read(*.7z)",
+  "Read(*.dmg)","Read(*.iso)",
+  "Read(*.psd)","Read(*.ai)","Read(*.sketch)",
+  "Read(~/.ssh/**)","Read(~/.gnupg/**)",
+  "Read(~/.aws/**)","Read(~/.azure/**)","Read(~/.kube/**)",
+  "Read(~/.docker/config.json)","Read(~/.npmrc)","Read(~/.pypirc)",
+  "Read(~/.git-credentials)","Read(~/.gem/credentials)",
+  "Read(**/*.pem)","Read(**/*.key)","Read(**/*.gpg)","Read(**/*.cert)","Read(**/*.crt)"
+]'
 current=$(echo "$current" | jq --argjson new_deny "$DENY_RULES" '
   .permissions.deny = ((.permissions.deny // []) + $new_deny | unique)
 ')
-echo "[OK] Added binary file deny rules"
+echo "  [OK] Deny rules (binary files + secrets + credentials)"
+
+# --- Settings ---
+current=$(echo "$current" | jq '.effortLevel = "high"')
+echo "  [OK] Effort level: high"
 
 # Write merged settings
 echo "$current" | jq '.' > "$SETTINGS_FILE"
-echo "[OK] Updated $SETTINGS_FILE"
+echo "  [OK] Settings written"
+
+# ═══════════════════════════════════════════════
+# Gemini CLI Setup (optional but recommended)
+# ═══════════════════════════════════════════════
 
 echo ""
-echo "=== Installation complete ==="
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  RECOMMENDED: Set up Gemini CLI"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
-echo "What was installed:"
-echo "  1. Screenshot hook — intercepts image reads, resizes, files into project/screenshots/"
-echo "  2. Binary deny rules — hard-blocks video, audio, archives, design files"
-echo "  3. Rules files — behavioral instructions for Claude"
+echo "  Gemini CLI gives Claude a second brain — a different AI"
+echo "  model for code review, large file analysis, and second"
+echo "  opinions. Gemini Flash is FREE (60 req/min)."
 echo ""
-echo "Restart Claude Code to activate. Test by dropping a screenshot into chat."
+echo "  Gemini beats Claude at:"
+echo "    - Code review accuracy (83% vs 72%)"
+echo "    - Context window (1M tokens vs 200K)"
+echo "    - Bulk processing (Flash free tier)"
 echo ""
-echo "To uninstall: restore from ${SETTINGS_FILE}.backup.*"
+
+SETUP_GEMINI=false
+if command -v gemini >/dev/null 2>&1; then
+  echo "  [OK] Gemini CLI is already installed"
+  # Check if API key is set
+  if [ -n "$GEMINI_API_KEY" ]; then
+    echo "  [OK] GEMINI_API_KEY is set"
+  else
+    echo "  [!!] GEMINI_API_KEY not found in environment"
+    SETUP_GEMINI=true
+  fi
+else
+  echo "  Gemini CLI is not installed."
+  echo ""
+  read -p "  Install Gemini CLI now? (y/n) " -n 1 -r
+  echo ""
+  if [[ $REPLY =~ ^[Yy]$ ]]; then
+    echo "  Installing..."
+    npm install -g @google/gemini-cli 2>&1 | tail -1
+    echo "  [OK] Gemini CLI installed"
+    SETUP_GEMINI=true
+  else
+    echo "  [SKIP] You can install later: npm install -g @google/gemini-cli"
+  fi
+fi
+
+if [ "$SETUP_GEMINI" = true ]; then
+  echo ""
+  echo "  To get your free API key:"
+  echo "    1. Go to: https://aistudio.google.com/apikey"
+  echo "    2. Click 'Create API Key'"
+  echo "    3. Copy the key"
+  echo ""
+
+  # Try to open the page
+  if command -v open >/dev/null 2>&1; then
+    read -p "  Open the API key page in your browser? (y/n) " -n 1 -r
+    echo ""
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+      open "https://aistudio.google.com/apikey"
+      echo "  [OK] Opened in browser"
+    fi
+  elif command -v xdg-open >/dev/null 2>&1; then
+    read -p "  Open the API key page in your browser? (y/n) " -n 1 -r
+    echo ""
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+      xdg-open "https://aistudio.google.com/apikey"
+      echo "  [OK] Opened in browser"
+    fi
+  fi
+
+  echo ""
+  read -p "  Paste your Gemini API key (or press Enter to skip): " gemini_key
+  if [ -n "$gemini_key" ]; then
+    # Detect shell config file
+    if [ -f "$HOME/.zshrc" ]; then
+      SHELL_RC="$HOME/.zshrc"
+    elif [ -f "$HOME/.bashrc" ]; then
+      SHELL_RC="$HOME/.bashrc"
+    else
+      SHELL_RC="$HOME/.bashrc"
+    fi
+
+    # Check if already set
+    if grep -q "GEMINI_API_KEY" "$SHELL_RC" 2>/dev/null; then
+      echo "  [SKIP] GEMINI_API_KEY already in $SHELL_RC — update manually if needed"
+    else
+      echo "export GEMINI_API_KEY=\"$gemini_key\"" >> "$SHELL_RC"
+      echo "  [OK] Added GEMINI_API_KEY to $SHELL_RC"
+      echo "  Run: source $SHELL_RC"
+    fi
+  else
+    echo "  [SKIP] Add later: echo 'export GEMINI_API_KEY=\"your-key\"' >> ~/.zshrc"
+  fi
+fi
+
+# ═══════════════════════════════════════════════
+# Summary
+# ═══════════════════════════════════════════════
+
+echo ""
+echo "  ╔══════════════════════════════════════╗"
+echo "  ║       Installation Complete          ║"
+echo "  ╚══════════════════════════════════════╝"
+echo ""
+echo "  Hooks:"
+echo "    - Screenshot handler (resize + file + redirect)"
+echo "    - Destructive command blocker (rm -rf, force push, sudo)"
+echo "    - Context preservation (saves state before compaction)"
+echo ""
+echo "  Permissions:"
+echo "    - Allow: all standard tools (no more prompting)"
+echo "    - Deny: binary files, secrets, credentials, SSH keys"
+echo ""
+echo "  Rules:"
+echo "    - Coding standards, git workflow, quality gates"
+echo "    - Context management, binary handling"
+echo "    - Gemini CLI orchestration"
+echo ""
+echo "  Settings:"
+echo "    - Effort level: high"
+echo "    - JSON schema for editor autocomplete"
+echo ""
+echo "  Restart Claude Code to activate."
+echo "  Backup at: ${SETTINGS_FILE}.backup.*"
+echo ""
