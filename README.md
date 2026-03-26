@@ -56,6 +56,7 @@ Slash commands installed to `~/.claude/commands/` — invoke directly in Claude 
 | `git-workflow.md` | Commit only when asked, stage specific files, never force push |
 | `quality-standard.md` | Verification gate, risk control, root cause fixes, no band-aids |
 | `screenshots.md` | Screenshot lifecycle — process, file to `_used/`, auto-cleanup after 7 days |
+| `capabilities.md` | Meta-rule: tells Claude what's installed and when to use each capability proactively |
 
 ### Permissions
 
@@ -178,6 +179,7 @@ rm ~/.claude/rules/gemini-orchestration.md
 rm ~/.claude/rules/git-workflow.md
 rm ~/.claude/rules/quality-standard.md
 rm ~/.claude/rules/screenshots.md
+rm ~/.claude/rules/capabilities.md
 rm ~/.claude/commands/audit.md
 rm ~/.claude/commands/gemini-review.md
 ```
