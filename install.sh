@@ -8,11 +8,12 @@ set -e
 CLAUDE_DIR="$HOME/.claude"
 HOOKS_DIR="$CLAUDE_DIR/hooks"
 RULES_DIR="$CLAUDE_DIR/rules"
+COMMANDS_DIR="$CLAUDE_DIR/commands"
 SETTINGS_FILE="$CLAUDE_DIR/settings.json"
 
 echo ""
 echo "  ╔══════════════════════════════════════╗"
-echo "  ║     Claude Code Safeguards v1.0      ║"
+echo "  ║    Claude Code Safeguards v1.1       ║"
 echo "  ╚══════════════════════════════════════╝"
 echo ""
 
@@ -25,7 +26,7 @@ if ! command -v jq >/dev/null 2>&1; then
 fi
 
 # Create directories
-mkdir -p "$HOOKS_DIR" "$RULES_DIR"
+mkdir -p "$HOOKS_DIR" "$RULES_DIR" "$COMMANDS_DIR"
 
 # --- Install hooks ---
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -47,6 +48,16 @@ for rule_file in "$SCRIPT_DIR/rules/"*.md; do
   rule_name=$(basename "$rule_file")
   cp "$rule_file" "$RULES_DIR/$rule_name"
   echo "  [OK] $rule_name"
+done
+
+# --- Install commands ---
+echo ""
+echo "Installing commands..."
+for cmd_file in "$SCRIPT_DIR/commands/"*.md; do
+  [ -f "$cmd_file" ] || continue
+  cmd_name=$(basename "$cmd_file")
+  cp "$cmd_file" "$COMMANDS_DIR/$cmd_name"
+  echo "  [OK] /$cmd_name (invoke with /${cmd_name%.md})"
 done
 
 # --- Merge settings.json ---
@@ -115,10 +126,10 @@ echo "  [OK] Allow rules (Bash, Read, Write, Edit, Glob, Grep, Agent, WebFetch, 
 # Deny rules — binary files + secrets + credentials
 DENY_RULES='[
   "Read(*.mp4)","Read(*.mov)","Read(*.avi)","Read(*.mkv)",
-  "Read(*.mp3)","Read(*.wav)","Read(*.flac)",
+  "Read(*.mp3)","Read(*.wav)","Read(*.flac)","Read(*.aac)",
   "Read(*.zip)","Read(*.tar.gz)","Read(*.rar)","Read(*.7z)",
   "Read(*.dmg)","Read(*.iso)",
-  "Read(*.psd)","Read(*.ai)","Read(*.sketch)",
+  "Read(*.psd)","Read(*.ai)","Read(*.sketch)","Read(*.fig)",
   "Read(~/.ssh/**)","Read(~/.gnupg/**)",
   "Read(~/.aws/**)","Read(~/.azure/**)","Read(~/.kube/**)",
   "Read(~/.docker/config.json)","Read(~/.npmrc)","Read(~/.pypirc)",
@@ -252,8 +263,13 @@ echo "    - Deny: binary files, secrets, credentials, SSH keys"
 echo ""
 echo "  Rules:"
 echo "    - Coding standards, git workflow, quality gates"
-echo "    - Context management, binary handling"
+echo "    - Context management, binary handling, file hygiene"
+echo "    - Screenshot management, full app audit"
 echo "    - Gemini CLI orchestration"
+echo ""
+echo "  Commands:"
+echo "    - /audit <project> — full engineering audit"
+echo "    - /gemini-review — delegate changes to Gemini for review"
 echo ""
 echo "  Settings:"
 echo "    - Effort level: high"
